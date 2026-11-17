@@ -203,7 +203,7 @@ ggplot() +
   labs(
     title    = "Población por distritos — Provincia de Puno",
     subtitle = "Grilla hexagonal superpuesta | Censo 2017",
-    caption  = "Fuente: INEI 2017 / Realizado por: Kennedy Emmanuel Sandoval Chambi"
+    caption  = "Fuente: INEI 2017 / Realizado por:LaGeoMaga"
   ) +
   theme_void() +
   theme(
