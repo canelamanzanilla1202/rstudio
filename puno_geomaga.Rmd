@@ -1,0 +1,232 @@
+---
+title: "Mapas Temáticos - Provincia de Puno - Perú"
+author: "LaGeoMaga/Luisa Angelica"
+date: "2026-05-23"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    collapsed: true
+    smooth_scroll: true
+    theme: flatly
+    highlight: tango
+    df_print: paged
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+# 1. Paquetes necesarios
+
+Cargo los paquetes que voy a usar a lo largo del documento.
+
+```{r}
+library(sf)       # leer y manejar shapefiles
+library(dplyr)    # filtrar y unir tablas
+library(readr)    # leer el archivo CSV
+library(leaflet)  # mapa interactivo
+library(ggplot2)  # mapa estátic
+library(geogrid)  # transformar polígonos a hexágonos
+library(viridis)  # colores para los mapas
+library(ggspatial) # para el fondo OSM, escala y norte
+```
+
+---
+
+# 2. Lectura de datos
+
+Leo los tres archivos: el shapefile de distritos, el de provincias y la tabla de población.
+
+```{r}
+# Distritos de todo el Perú
+distritos  <- st_read("C:/Users/Asus/Downloads/examen_1-20260523T162018Z-3-001/examen_1/data/DISTRITOS.shp", quiet = TRUE)
+
+# Provincias del Perú
+provincias <- st_read("C:/Users/Asus/Downloads/examen_1-20260523T162018Z-3-001/examen_1/data/PROVINCIAS.shp", quiet = TRUE)
+
+# Tabla con la población por distrito (Censo 2017)
+poblacion  <- read_csv("C:/Users/Asus/Downloads/examen_1-20260523T162018Z-3-001/examen_1/data/poblacion_distrital.csv")
+```
+
+---
+
+# 3. Filtro: Provincia de Puno
+
+Me quedo solo con los distritos que pertenecen a la provincia de Puno, departamento de Puno.
+
+```{r}
+prov_puno <- distritos %>%
+  filter(trimws(DEPARTAMEN) == "PUNO",
+         trimws(PROVINCIA)  == "PUNO")
+
+# ¿Cuántos distritos tiene la provincia?
+cat("Distritos encontrados:", nrow(prov_puno))
+```
+
+---
+
+# 4. Unión con la tabla de población
+
+Uno los datos de población al shapefile. La clave de unión es el código de distrito: `IDDIST` en el shapefile y `ubigeo` en el CSV.
+
+```{r}
+# Convierto ambas columnas a texto para que coincidan
+prov_puno <- prov_puno %>%
+  mutate(IDDIST = as.character(IDDIST))
+
+poblacion <- poblacion %>%
+  mutate(ubigeo = as.character(ubigeo))
+
+# Hago el join (como un BUSCARV en Excel)
+prov_puno <- prov_puno %>%
+  left_join(poblacion, by = c("IDDIST" = "ubigeo"))
+
+cat("Distritos con dato de población:", sum(!is.na(prov_puno$pob_2017)))
+```
+
+---
+
+# 5. Conversión de sistema de coordenadas
+
+Leaflet necesita coordenadas geográficas (WGS84) y geogrid necesita coordenadas en metros (UTM). Por eso creo dos versiones del mapa.
+
+```{r}
+puno_utm <- prov_puno %>%
+  st_transform(crs = 32719)  # EPSG 32719 = UTM zona 19S, cubre Puno
+```
+
+---
+
+# Inciso a) Mapa interactivo coroplético
+
+Mapa de los distritos de la provincia de Puno coloreados según su población.
+- **Pasar el cursor** → muestra el nombre del distrito
+- **Hacer clic** → muestra la cantidad de habitantes
+
+```{r}
+# Defino la paleta de colores (plasma va del morado al amarillo)
+colores <- colorNumeric(palette = "plasma",
+                        domain   = prov_puno$pob_2017,
+                        na.color = "#d3d3d3")
+
+# texto que aparece al hacer clic
+info_popup <- paste0("<b>Distrito: </b>",  prov_puno$DISTRITO,  "<br>",
+                     "<b>Población: </b>", format(prov_puno$pob_2017, big.mark = ","))
+
+# Construción del mapa
+leaflet(prov_puno) %>%
+  addProviderTiles(providers$OpenStreetMap) %>%
+  addPolygons(
+    fillColor   = ~colores(pob_2017),  # relleno según población
+    fillOpacity = 0.8,
+    color       = "white",             # borde blanco
+    weight      = 1.5,
+    label       = ~DISTRITO,           # nombre al pasar el cursor
+    popup       = info_popup,          # detalle al hacer clic
+    highlight   = highlightOptions(
+      weight       = 3,
+      color        = "#444",
+      fillOpacity  = 0.95,
+      bringToFront = TRUE
+    )
+  ) %>%
+  addLegend(
+    position  = "bottomright",
+    pal       = colores,
+    values    = ~pob_2017,
+    title     = "Población<br>2017",
+    labFormat = labelFormat(big.mark = ","),
+    opacity   = 0.9
+  ) %>%
+  addScaleBar(position = "bottomleft",
+              options  = scaleBarOptions(imperial = FALSE)) %>%
+  addControl(                                      # <-- AGREGA ESTO
+    html     = "<b style='font-size:14px;'>Distritos de la Provincia de Puno</b>
+                <br><span style='font-size:11px; color:gray;'>Elaborado por: LaGeoMaga</span>",
+    position = "topleft"
+  )
+  
+
+```
+
+---
+
+# Inciso b) Mapa hexagonal estático
+
+Cada hexágono representa un distrito. El color indica la cantidad de población según el Censo 2017.
+
+```{r fig.width=9, fig.height=8}
+# PASO 1: Grilla hexagonal
+grilla_hex <- st_make_grid(
+  puno_utm, cellsize = 5000, square = FALSE
+) %>%
+  st_sf() %>%
+  mutate(id_hex = row_number())
+
+# PASO 2: Recortar al contorno
+contorno_puno    <- st_union(puno_utm)
+grilla_recortada <- st_intersection(grilla_hex, contorno_puno)
+
+# PASO 3: Asignar distrito a cada hexágono
+hex_con_datos <- st_join(
+  grilla_recortada, puno_utm,
+  join = st_intersects, largest = TRUE
+)
+
+# PASO 4: Reproyectar a WGS84
+hex_wgs84  <- st_transform(hex_con_datos, crs = 4326)
+puno_wgs84 <- st_transform(puno_utm,      crs = 4326)
+
+# PASO 4.5: Centro de cada distrito para las etiquetas
+centros_distritos <- puno_wgs84 %>%
+  group_by(DISTRITO) %>%
+  summarise(geometry = st_union(geometry),
+            pob_2017 = first(pob_2017)) %>%
+  st_centroid()
+
+# PASO 5: Dibujar el mapa
+ggplot() +
+  annotation_map_tile(type = "osm", zoom = 10, quiet = TRUE) +
+  geom_sf(data = hex_wgs84, aes(fill = pob_2017),
+          color = "white", linewidth = 0.15, alpha = 0.85) +
+  geom_sf(data = puno_wgs84, fill = NA,
+          color = "black", linewidth = 0.8) +
+  geom_sf_text(data = centros_distritos, aes(label = DISTRITO), size = 2.5, color = "cyan", fontface = "bold", check_overlap = TRUE)+
+  scale_fill_viridis_c(option = "plasma", name = "Población\n2017",
+                       labels = scales::comma, na.value = "#d3d3d3") +
+  annotation_scale(location = "bl", width_hint = 0.3) +
+  annotation_north_arrow(location = "tr",
+                         style = north_arrow_fancy_orienteering()) +
+  labs(
+    title    = "Población por distritos — Provincia de Puno",
+    subtitle = "Grilla hexagonal superpuesta | Censo 2017",
+    caption  = "Fuente: INEI 2017 / Realizado por: Kennedy Emmanuel Sandoval Chambi"
+  ) +
+  theme_void() +
+  theme(
+    plot.title      = element_text(face = "bold", size = 14, hjust = 0.5),
+    plot.subtitle   = element_text(size = 9,  hjust = 0.5, color = "grey50"),
+    plot.caption    = element_text(size = 8,  color = "grey60"),
+    legend.position = "right",
+    plot.background = element_rect(fill = "white", color = NA),
+    plot.margin     = margin(12, 12, 10, 12)
+  )
+```
+
+
+# Tabla resumen
+
+Distritos de la provincia de Puno ordenados de mayor a menor población.
+
+```{r}
+prov_puno %>%
+  st_drop_geometry() %>%
+  select(DISTRITO, PROVINCIA, pob_2017) %>%
+  arrange(desc(pob_2017)) %>%
+  rename(Distrito  = DISTRITO,
+         Provincia = PROVINCIA,
+         `Población 2017` = pob_2017)
+```
